@@ -13,6 +13,8 @@ const MAPPING = {
   'paperplane.fill': 'send',
   'chevron.left.forwardslash.chevron.right': 'code',
   'chevron.right': 'chevron-right',
+  'arrow.triangle.2.circlepath': 'flip-camera-ios',
+  'photo.on.rectangle': 'photo-library',
 } as Partial<
   Record<
     import('expo-symbols').SymbolViewProps['name'],
