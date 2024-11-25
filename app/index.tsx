@@ -194,15 +194,22 @@ export default function CameraScreen() {
   };
 
   const openGallery = async () => {
-    const result = await ImagePicker.launchImageLibraryAsync({
-      mediaTypes: ImagePicker.MediaTypeOptions.Images,
-      quality: 1,
-    });
+    try {
+      const result = await ImagePicker.launchImageLibraryAsync({
+        mediaTypes: ['images'],
+        allowsEditing: true,
+        aspect: [1, 1],
+        quality: 1,
+      });
 
-    if (!result.canceled && result.assets[0]) {
-      setCapturedImage(result.assets[0].uri);
-      setMode('preview');
-      await generateMemeText(result.assets[0].uri);
+      if (!result.canceled && result.assets) {
+        setCapturedImage(result.assets[0].uri);
+        setMode('preview');
+        await generateMemeText(result.assets[0].uri);
+      }
+    } catch (error) {
+      console.error('Error picking image:', error);
+      setError('Failed to pick image from gallery. Please try again.');
     }
   };
 
@@ -521,17 +528,13 @@ const styles = StyleSheet.create({
       default: 'Arial'
     }),
     textShadowColor: 'black',
-    textShadowOffset: { width: -1, height: -1 },
-    textShadowRadius: 0,
+    textShadowOffset: { width: -2, height: -2 },
+    textShadowRadius: 3,
     letterSpacing: 1,
     zIndex: 1,
     left: '5%',
     right: '5%',
     paddingHorizontal: 10,
-    borderColor: 'black',
-    borderWidth: 2,
-    borderRadius: 2,
-    backgroundColor: 'transparent',
   },
   topText: {
     top: '2%',
