@@ -1,6 +1,18 @@
 import React from 'react';
 import { useEffect, useRef, useState } from 'react';
-import { StyleSheet, View, TouchableOpacity, Image, Text, Platform, ToastAndroid, Animated } from 'react-native';
+import { 
+  StyleSheet, 
+  View, 
+  TouchableOpacity, 
+  Image, 
+  Text, 
+  Platform, 
+  ToastAndroid, 
+  Animated,
+  Modal,
+  Linking,
+  Pressable
+} from 'react-native';
 import { CameraView, CameraType, useCameraPermissions, CameraCapturedPicture, CameraMountError } from 'expo-camera';
 import * as MediaLibrary from 'expo-media-library';
 import * as ImagePicker from 'expo-image-picker';
@@ -35,6 +47,8 @@ interface ToastState {
 
 export default function CameraScreen() {
   const [type, setType] = useState<CameraType>('back');
+  const [flash, setFlash] = useState<boolean>(false);
+  const [infoVisible, setInfoVisible] = useState(false);
   const [mode, setMode] = useState<CameraMode>('camera');
   const [permission, requestPermission] = useCameraPermissions();
   const [mediaPermission, requestMediaPermission] = MediaLibrary.usePermissions();
@@ -130,14 +144,18 @@ export default function CameraScreen() {
   };
 
   const generateMemeText = async (imageUri: string) => {
+    setIsGenerating(true);
+    setError(null);
     try {
-      setIsGenerating(true);
-      setError(null);
-      const memeText = await analyzeMemeImage(imageUri);
-      setMemeText(memeText);
+      const result = await analyzeMemeImage(imageUri);
+      setMemeText(result);
     } catch (error) {
       console.error('Error generating meme:', error);
-      setError('Failed to generate meme text. Please try again.');
+      if (error instanceof Error && error.message.includes('quota')) {
+        setError('Oops! We\'ve hit our daily limit. Please try again in a few hours when our AI recharges. ');
+      } else {
+        setError('Failed to generate meme text. Please try again.');
+      }
     } finally {
       setIsGenerating(false);
     }
@@ -159,7 +177,7 @@ export default function CameraScreen() {
         });
         
         await MediaLibrary.saveToLibraryAsync(uri);
-        showToast('Meme saved to gallery! 🎉');
+        showToast('Meme saved to gallery! ');
       } catch (error) {
         console.error('Error saving meme:', error);
         setError('Failed to save meme. Please try again.');
@@ -185,6 +203,18 @@ export default function CameraScreen() {
       setCapturedImage(result.assets[0].uri);
       setMode('preview');
       await generateMemeText(result.assets[0].uri);
+    }
+  };
+
+  const toggleFlash = () => {
+    setFlash(current => !current);
+  };
+
+  const openLink = async (url: string) => {
+    try {
+      await Linking.openURL(url);
+    } catch (error) {
+      console.error('Error opening link:', error);
     }
   };
 
@@ -280,11 +310,36 @@ export default function CameraScreen() {
         ref={cameraRef} 
         style={styles.camera} 
         facing={type}
+        enableTorch={flash}
         onMountError={(error: CameraMountError) => {
           console.error('Camera mount error:', error);
           setError('Failed to start camera. Please try again.');
         }}
       >
+        <View style={styles.topControls}>
+          <TouchableOpacity 
+            style={styles.iconButton} 
+            onPress={toggleFlash}
+          >
+            <IconSymbol 
+              name={flash ? "bolt.fill" : "bolt.slash.fill"} 
+              size={24} 
+              color="white" 
+            />
+          </TouchableOpacity>
+
+          <TouchableOpacity 
+            style={styles.iconButton} 
+            onPress={() => setInfoVisible(true)}
+          >
+            <IconSymbol 
+              name="info.circle.fill" 
+              size={24} 
+              color="white" 
+            />
+          </TouchableOpacity>
+        </View>
+
         <View style={styles.cameraControlsContainer}>
           <View style={styles.cameraControls}>
             <TouchableOpacity 
@@ -316,6 +371,53 @@ export default function CameraScreen() {
           </View>
         </View>
       </CameraView>
+
+      <Modal
+        animationType="fade"
+        transparent={true}
+        visible={infoVisible}
+        onRequestClose={() => setInfoVisible(false)}
+      >
+        <Pressable 
+          style={styles.modalOverlay} 
+          onPress={() => setInfoVisible(false)}
+        >
+          <View style={styles.modalContent}>
+            <Text style={styles.modalTitle}>MemeCam</Text>
+            <Text style={styles.modalSubtitle}>A EssJayKay.dev Software</Text>
+            
+            <View style={styles.modalLinks}>
+              <TouchableOpacity 
+                onPress={() => openLink('https://essjaykay.dev')}
+                style={styles.linkButton}
+              >
+                <Text style={styles.linkText}>Official Website</Text>
+              </TouchableOpacity>
+
+              <TouchableOpacity 
+                onPress={() => openLink('https://memecam.essjaykay.dev')}
+                style={styles.linkButton}
+              >
+                <Text style={styles.linkText}>App Website</Text>
+              </TouchableOpacity>
+
+              <TouchableOpacity 
+                onPress={() => openLink('https://github.com/essjaykay755')}
+                style={styles.linkButton}
+              >
+                <Text style={styles.linkText}>Developer: Subhojit Karmakar</Text>
+              </TouchableOpacity>
+            </View>
+
+            <TouchableOpacity 
+              style={styles.closeButton}
+              onPress={() => setInfoVisible(false)}
+            >
+              <Text style={styles.closeButtonText}>Close</Text>
+            </TouchableOpacity>
+          </View>
+        </Pressable>
+      </Modal>
     </ThemedView>
   );
 }
@@ -508,5 +610,76 @@ const styles = StyleSheet.create({
     color: 'white',
     fontSize: 16,
     textAlign: 'center',
+  },
+  topControls: {
+    position: 'absolute',
+    top: Platform.select({ ios: 50, default: 20 }),
+    left: 0,
+    right: 0,
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    paddingHorizontal: 20,
+    zIndex: 2,
+  },
+  iconButton: {
+    width: 44,
+    height: 44,
+    borderRadius: 22,
+    backgroundColor: 'rgba(0,0,0,0.3)',
+    justifyContent: 'center',
+    alignItems: 'center',
+  },
+  modalOverlay: {
+    flex: 1,
+    backgroundColor: 'rgba(0,0,0,0.5)',
+    justifyContent: 'center',
+    alignItems: 'center',
+  },
+  modalContent: {
+    backgroundColor: '#2C2C2E',
+    borderRadius: 16,
+    padding: 24,
+    width: '80%',
+    maxWidth: 400,
+    alignItems: 'center',
+  },
+  modalTitle: {
+    fontSize: 24,
+    fontWeight: 'bold',
+    color: 'white',
+    marginBottom: 8,
+  },
+  modalSubtitle: {
+    fontSize: 16,
+    color: '#999',
+    marginBottom: 24,
+  },
+  modalLinks: {
+    width: '100%',
+    gap: 16,
+    marginBottom: 24,
+  },
+  linkButton: {
+    paddingVertical: 12,
+    paddingHorizontal: 16,
+    backgroundColor: '#1C1C1E',
+    borderRadius: 8,
+    width: '100%',
+  },
+  linkText: {
+    color: '#0A84FF',
+    fontSize: 16,
+    textAlign: 'center',
+  },
+  closeButton: {
+    paddingVertical: 12,
+    paddingHorizontal: 24,
+    backgroundColor: '#0A84FF',
+    borderRadius: 8,
+  },
+  closeButtonText: {
+    color: 'white',
+    fontSize: 16,
+    fontWeight: '600',
   },
 });
