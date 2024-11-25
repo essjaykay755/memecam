@@ -1,13 +1,13 @@
 import React from 'react';
 import { useEffect, useRef, useState } from 'react';
-import { StyleSheet, View, TouchableOpacity, Image, Text, Platform } from 'react-native';
-import { CameraView, CameraType, useCameraPermissions } from 'expo-camera';
+import { StyleSheet, View, TouchableOpacity, Image, Text, Platform, ToastAndroid, Animated } from 'react-native';
+import { CameraView, CameraType, useCameraPermissions, CameraCapturedPicture, CameraMountError } from 'expo-camera';
 import * as MediaLibrary from 'expo-media-library';
 import * as ImagePicker from 'expo-image-picker';
 import { IconSymbol } from '@/components/ui/IconSymbol';
 import { ThemedView } from '@/components/ThemedView';
 import { ThemedText } from '@/components/ThemedText';
-import { manipulateAsync, SaveFormat } from 'expo-image-manipulator';
+import { manipulateAsync, SaveFormat, FlipType } from 'expo-image-manipulator';
 import { analyzeMemeImage } from '@/services/gemini';
 import ViewShot, { captureRef } from 'react-native-view-shot';
 
@@ -28,6 +28,11 @@ const MemeText = ({ text, style }: { text: string; style: any }) => (
   </Text>
 );
 
+interface ToastState {
+  visible: boolean;
+  message: string;
+}
+
 export default function CameraScreen() {
   const [type, setType] = useState<CameraType>('back');
   const [mode, setMode] = useState<CameraMode>('camera');
@@ -38,8 +43,33 @@ export default function CameraScreen() {
   const [isGenerating, setIsGenerating] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [isSaving, setIsSaving] = useState(false);
+  const [toast, setToast] = useState<ToastState>({ visible: false, message: '' });
   const cameraRef = useRef<CameraView>(null);
   const viewShotRef = useRef<View>(null);
+  const fadeAnim = useRef(new Animated.Value(0)).current;
+
+  const showToast = (message: string) => {
+    if (Platform.OS === 'android') {
+      ToastAndroid.show(message, ToastAndroid.SHORT);
+    } else {
+      setToast({ visible: true, message });
+      Animated.sequence([
+        Animated.timing(fadeAnim, {
+          toValue: 1,
+          duration: 300,
+          useNativeDriver: true,
+        }),
+        Animated.delay(2000),
+        Animated.timing(fadeAnim, {
+          toValue: 0,
+          duration: 300,
+          useNativeDriver: true,
+        }),
+      ]).start(() => {
+        setToast({ visible: false, message: '' });
+      });
+    }
+  };
 
   useEffect(() => {
     requestPermission();
@@ -65,39 +95,51 @@ export default function CameraScreen() {
     setType((current) => current === 'back' ? 'front' : 'back');
   };
 
-  const generateMemeText = async (imageUri: string) => {
-    setIsGenerating(true);
-    setError(null);
-    try {
-      const memeText = await analyzeMemeImage(imageUri);
-      setMemeText(memeText);
-      setMode('editing');
-    } catch (error) {
-      console.error('Error generating meme:', error);
-      if (error instanceof Error) {
-        setError(error.message);
-      } else {
-        setError('Failed to generate meme');
-      }
-      // Stay in preview mode but show error
-      setMode('preview');
-    } finally {
-      setIsGenerating(false);
-    }
-  };
-
   const takePicture = async () => {
     if (cameraRef.current) {
       try {
-        const photo = await cameraRef.current.takePictureAsync({ quality: 1 });
-        if (photo?.uri) {
-          setCapturedImage(photo.uri);
+        const result = await cameraRef.current.takePictureAsync({
+          quality: 1,
+          skipProcessing: true
+        });
+
+        if (!result) {
+          throw new Error('Failed to capture photo');
+        }
+        
+        // Flip image if using front camera
+        if (type === 'front') {
+          const flippedPhoto = await manipulateAsync(
+            result.uri,
+            [{ flip: FlipType.Horizontal }],
+            { compress: 1, format: SaveFormat.JPEG }
+          );
+          setCapturedImage(flippedPhoto.uri);
           setMode('preview');
-          await generateMemeText(photo.uri);
+          generateMemeText(flippedPhoto.uri);
+        } else {
+          setCapturedImage(result.uri);
+          setMode('preview');
+          generateMemeText(result.uri);
         }
       } catch (error) {
         console.error('Error taking picture:', error);
+        setError('Failed to take picture. Please try again.');
       }
+    }
+  };
+
+  const generateMemeText = async (imageUri: string) => {
+    try {
+      setIsGenerating(true);
+      setError(null);
+      const memeText = await analyzeMemeImage(imageUri);
+      setMemeText(memeText);
+    } catch (error) {
+      console.error('Error generating meme:', error);
+      setError('Failed to generate meme text. Please try again.');
+    } finally {
+      setIsGenerating(false);
     }
   };
 
@@ -117,9 +159,7 @@ export default function CameraScreen() {
         });
         
         await MediaLibrary.saveToLibraryAsync(uri);
-        setMode('camera');
-        setCapturedImage(null);
-        setMemeText(null);
+        showToast('Meme saved to gallery! 🎉');
       } catch (error) {
         console.error('Error saving meme:', error);
         setError('Failed to save meme. Please try again.');
@@ -151,6 +191,11 @@ export default function CameraScreen() {
   if (mode === 'preview' || mode === 'editing') {
     return (
       <ThemedView style={styles.container}>
+        {Platform.OS === 'ios' && toast.visible && (
+          <Animated.View style={[styles.toast, { opacity: fadeAnim }]}>
+            <Text style={styles.toastText}>{toast.message}</Text>
+          </Animated.View>
+        )}
         <View style={styles.memeContainer}>
           <View style={styles.memeTextContainer}>
             {isGenerating ? (
@@ -190,28 +235,32 @@ export default function CameraScreen() {
           
           <View style={styles.editButtons}>
             <TouchableOpacity 
-              style={styles.editButton} 
+              style={[styles.editButton, isSaving && styles.disabledButton]} 
               onPress={retryMeme}
               disabled={isSaving}
             >
-              <IconSymbol name="arrow.triangle.2.circlepath" size={28} color="white" />
-              <ThemedText style={styles.buttonText}>New Photo</ThemedText>
+              <View style={styles.buttonContent}>
+                <IconSymbol name="arrow.triangle.2.circlepath" size={24} color="white" />
+                <ThemedText style={styles.buttonText}>New Photo</ThemedText>
+              </View>
             </TouchableOpacity>
             
             {memeText && !error && (
               <TouchableOpacity 
-                style={[styles.editButton, isSaving && styles.disabledButton]} 
+                style={[styles.editButton, styles.saveButton, isSaving && styles.disabledButton]} 
                 onPress={saveMeme}
                 disabled={isSaving}
               >
-                <IconSymbol 
-                  name={isSaving ? "hourglass" : "photo.on.rectangle"} 
-                  size={28} 
-                  color="white" 
-                />
-                <ThemedText style={styles.buttonText}>
-                  {isSaving ? 'Saving...' : 'Save'}
-                </ThemedText>
+                <View style={styles.buttonContent}>
+                  <IconSymbol 
+                    name={isSaving ? "hourglass" : "square.and.arrow.down"} 
+                    size={24} 
+                    color="white" 
+                  />
+                  <ThemedText style={styles.buttonText}>
+                    {isSaving ? 'Saving...' : 'Save Meme'}
+                  </ThemedText>
+                </View>
               </TouchableOpacity>
             )}
           </View>
@@ -222,23 +271,49 @@ export default function CameraScreen() {
 
   return (
     <ThemedView style={styles.container}>
+      {Platform.OS === 'ios' && toast.visible && (
+        <Animated.View style={[styles.toast, { opacity: fadeAnim }]}>
+          <Text style={styles.toastText}>{toast.message}</Text>
+        </Animated.View>
+      )}
       <CameraView 
         ref={cameraRef} 
         style={styles.camera} 
         facing={type}
+        onMountError={(error: CameraMountError) => {
+          console.error('Camera mount error:', error);
+          setError('Failed to start camera. Please try again.');
+        }}
       >
-        <View style={styles.buttonContainer}>
-          <TouchableOpacity style={styles.iconButton} onPress={toggleCameraType}>
-            <IconSymbol name="arrow.triangle.2.circlepath" size={28} color="white" />
-          </TouchableOpacity>
-          
-          <TouchableOpacity style={styles.shutterButton} onPress={takePicture}>
-            <View style={styles.shutterInner} />
-          </TouchableOpacity>
+        <View style={styles.cameraControlsContainer}>
+          <View style={styles.cameraControls}>
+            <TouchableOpacity 
+              style={styles.cameraButton} 
+              onPress={openGallery}
+            >
+              <View style={styles.buttonContent}>
+                <IconSymbol name="photo.on.rectangle" size={24} color="white" />
+                <ThemedText style={styles.buttonText}>Gallery</ThemedText>
+              </View>
+            </TouchableOpacity>
 
-          <TouchableOpacity style={styles.iconButton} onPress={openGallery}>
-            <IconSymbol name="photo.on.rectangle" size={28} color="white" />
-          </TouchableOpacity>
+            <TouchableOpacity 
+              style={styles.captureButton} 
+              onPress={takePicture}
+            >
+              <View style={styles.captureButtonInner} />
+            </TouchableOpacity>
+
+            <TouchableOpacity 
+              style={styles.cameraButton} 
+              onPress={toggleCameraType}
+            >
+              <View style={styles.buttonContent}>
+                <IconSymbol name="camera.rotate" size={24} color="white" />
+                <ThemedText style={styles.buttonText}>Flip</ThemedText>
+              </View>
+            </TouchableOpacity>
+          </View>
         </View>
       </CameraView>
     </ThemedView>
@@ -251,38 +326,52 @@ const styles = StyleSheet.create({
   },
   camera: {
     flex: 1,
+    justifyContent: 'flex-end',
   },
-  buttonContainer: {
-    position: 'absolute',
-    bottom: 50,
+  cameraControlsContainer: {
+    width: '100%',
+    paddingBottom: Platform.select({ ios: 40, android: 20 }),
+    backgroundColor: 'rgba(0, 0, 0, 0.3)',
+  },
+  cameraControls: {
     flexDirection: 'row',
-    width: '100%',
-    justifyContent: 'space-evenly',
+    justifyContent: 'space-around',
     alignItems: 'center',
+    width: '100%',
     paddingHorizontal: 20,
+    paddingVertical: 20,
   },
-  iconButton: {
-    width: 44,
-    height: 44,
-    borderRadius: 22,
-    backgroundColor: 'rgba(0,0,0,0.3)',
-    justifyContent: 'center',
-    alignItems: 'center',
+  cameraButton: {
+    backgroundColor: '#2C2C2E',
+    borderRadius: 12,
+    padding: 12,
+    minWidth: 100,
+    elevation: 3,
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 2 },
+    shadowOpacity: 0.25,
+    shadowRadius: 4,
   },
-  shutterButton: {
-    width: 80,
-    height: 80,
-    borderRadius: 40,
-    backgroundColor: 'rgba(255,255,255,0.3)',
-    padding: 4,
-    justifyContent: 'center',
-    alignItems: 'center',
-  },
-  shutterInner: {
-    width: '100%',
-    height: '100%',
+  captureButton: {
+    width: 72,
+    height: 72,
     borderRadius: 36,
+    backgroundColor: 'rgba(255, 255, 255, 0.3)',
+    justifyContent: 'center',
+    alignItems: 'center',
+    elevation: 3,
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 2 },
+    shadowOpacity: 0.25,
+    shadowRadius: 4,
+  },
+  captureButtonInner: {
+    width: 62,
+    height: 62,
+    borderRadius: 31,
     backgroundColor: 'white',
+    borderWidth: 2,
+    borderColor: '#2C2C2E',
   },
   permissionButton: {
     padding: 20,
@@ -330,13 +419,17 @@ const styles = StyleSheet.create({
       default: 'Arial'
     }),
     textShadowColor: 'black',
-    textShadowOffset: { width: -2, height: -2 },
+    textShadowOffset: { width: -1, height: -1 },
     textShadowRadius: 0,
     letterSpacing: 1,
     zIndex: 1,
     left: '5%',
     right: '5%',
     paddingHorizontal: 10,
+    borderColor: 'black',
+    borderWidth: 2,
+    borderRadius: 2,
+    backgroundColor: 'transparent',
   },
   topText: {
     top: '2%',
@@ -351,21 +444,38 @@ const styles = StyleSheet.create({
   editButtons: {
     flexDirection: 'row',
     justifyContent: 'space-around',
+    alignItems: 'center',
     width: '100%',
-    padding: 20,
+    paddingHorizontal: 20,
+    paddingVertical: 15,
   },
   editButton: {
+    backgroundColor: '#2C2C2E',
+    borderRadius: 12,
+    padding: 12,
+    minWidth: 140,
+    elevation: 3,
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 2 },
+    shadowOpacity: 0.25,
+    shadowRadius: 4,
+  },
+  saveButton: {
+    backgroundColor: '#0A84FF',
+  },
+  buttonContent: {
     flexDirection: 'row',
     alignItems: 'center',
-    backgroundColor: '#0a7ea4',
-    padding: 12,
-    borderRadius: 8,
+    justifyContent: 'center',
     gap: 8,
   },
   buttonText: {
-    color: 'white',
     fontSize: 16,
     fontWeight: '600',
+    color: 'white',
+  },
+  disabledButton: {
+    opacity: 0.6,
   },
   errorContainer: {
     alignItems: 'center',
@@ -383,7 +493,20 @@ const styles = StyleSheet.create({
     paddingVertical: 10,
     borderRadius: 8,
   },
-  disabledButton: {
-    opacity: 0.5
+  toast: {
+    position: 'absolute',
+    top: Platform.select({ ios: 50, default: 20 }),
+    left: 20,
+    right: 20,
+    backgroundColor: 'rgba(0, 0, 0, 0.8)',
+    padding: 16,
+    borderRadius: 8,
+    zIndex: 9999,
+    alignItems: 'center',
+  },
+  toastText: {
+    color: 'white',
+    fontSize: 16,
+    textAlign: 'center',
   },
 });
